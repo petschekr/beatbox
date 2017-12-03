@@ -4,11 +4,7 @@ version = "0.1.0"
 authors = ["Ryan Petschek <petschekr@gmail.com>"]
 
 [dependencies]
-futures = "0.1"
-hyper = "0.11"
-hyper-tls = "0.1.2"
-tokio-core = "0.1"
+reqwest = "0.8.1"
 openssl = "0.9.20"
 ring = "0.12.1"
-url = "1.6.0"
 base64 = "0.7.0"

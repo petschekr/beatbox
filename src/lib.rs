@@ -1,23 +1,14 @@
-extern crate futures;
-extern crate hyper;
-extern crate hyper_tls;
-extern crate tokio_core;
+extern crate reqwest;
 extern crate ring;
-extern crate url;
 extern crate openssl;
 extern crate base64;
 
-use futures::{Future, Stream};
-use hyper::{Method, Request, Client};
-use hyper::header::ContentType;
-use hyper_tls::HttpsConnector;
-use tokio_core::reactor::Core;
+use std::collections::HashMap;
+
 use ring::digest;
-use url::form_urlencoded;
 use openssl::rsa::Rsa;
 use openssl::bn::BigNum;
 
-const THREADS: usize = 4;
 const SIGNING_KEY: &'static str = "AAAAgMom/1a/v0lblO2Ubrt60J2gcuXSljGFQXgcyZWveWLEwo6prwgi3iJIZdodyhKZQrNWp5nKJ3srRXcUW+F1BD3baEVGcmEgqaLZUNBjm057pKRI16kB0YppeGx5qIQ5QjKzsR8ETQbKLNWgRY0QRNVz34kMJR3P/LgHax/6rmf5AAAAAwEAAQ==";
 
 const BASE_URL: &'static str = "https://www.googleapis.com/sj/v1.11/";
@@ -27,8 +18,8 @@ const ACCOUNT_URL: &'static str = "https://www.google.com/accounts/";
 const AUTH_URL: &'static str = "https://android.clients.google.com/auth";
 
 pub struct Instance {
-	core: Core,
-	client: Client<HttpsConnector<hyper::client::HttpConnector>>,
+	client: reqwest::Client,
+	token: Option<String>,
 }
 
 pub struct LoginDetails<'a> {
@@ -39,49 +30,46 @@ pub struct LoginDetails<'a> {
 
 impl Instance {
 	pub fn new() -> Instance {
-		let core = Core::new().unwrap();
-		let handle = core.handle();
-		let client = Client::configure().connector(HttpsConnector::new(THREADS, &handle).unwrap()).build(&handle);
-
 		Instance {
-			core,
-			client,
+			client: reqwest::Client::new(),
+			token: None
 		}
 	}
 	
-	pub fn init(&mut self, details: LoginDetails) -> Result<(), hyper::Error> {
-		let mut request = Request::new(Method::Post, AUTH_URL.parse().unwrap());
-		request.headers_mut().set(ContentType::form_url_encoded());
+	pub fn init(&mut self, details: LoginDetails) -> Result<(), reqwest::Error> {
+		let password;
+		let mut body = HashMap::new();
 
-		let mut body = form_urlencoded::Serializer::new(String::new());
-		body.append_pair("accountType", "HOSTED_OR_GOOGLE")
-			.append_pair("has_permission", "1")
-			.append_pair("service", "sj")
-			.append_pair("source", "android")
-			.append_pair("androidId", "")
-			.append_pair("app", "com.google.android.music")
-			.append_pair("device_country", "us")
-			.append_pair("operatorCountry", "us")
-			// .append_pair("client_sig", "61ed377e85d386a8dfee6b864bd85b0bfaa5af81")
-			.append_pair("lang", "en")
-			.append_pair("sdk_version", "17");
+		body.insert("accountType", "HOSTED_OR_GOOGLE");
+		body.insert("has_permission", "1");
+		body.insert("service", "sj");
+		body.insert("source", "android");
+		body.insert("androidId", "");
+		body.insert("app", "com.google.android.music");
+		body.insert("device_country", "us");
+		body.insert("operatorCountry", "us");
+		// headers.insert("client_sig", "61ed377e85d386a8dfee6b864bd85b0bfaa5af81");
+		body.insert("lang", "en");
+		body.insert("sdk_version", "17");
+
 		match details.master_token {
-			Some(token) => body.append_pair("Token", token),
+			Some(token) => {
+				body.insert("Token", token);
+			},
 			None => {
 				let email = details.email.expect("Email required if no master token");
-				let password = details.password.expect("Password required if no master token");
-				body.append_pair("EncryptedPasswd", &encrypt_login(email, password))
-				    .append_pair("Email", email)
+				let raw_password = details.password.expect("Password required if no master token");
+				password = encrypt_login(email, raw_password);
+				body.insert("EncryptedPasswd", &password);
+				body.insert("Email", email);
 			}
 		};
 
-		request.set_body(body.finish());
-		let post = self.client.request(request).and_then(|response| {
-			println!("Status code: {}", response.status());
-			response.body().concat2()
-		});
-		let result = self.core.run(post).unwrap();
-		println!("Response: {}", std::str::from_utf8(&result)?);
+		let response = self.client.post(AUTH_URL).form(&body).send()?.text()?;
+		println!("{}", response);
+		let parsed = parse_key_values(&response);
+
+		self.token = Some(parsed.get("Auth").unwrap().to_string());
 		
 		Ok(())
 	}
@@ -123,6 +111,15 @@ fn encrypt_login(email: &str, password: &str) -> String {
 	res.extend_from_slice(&result);
 	
 	base64::encode_config(&res, base64::URL_SAFE)
+}
+
+fn parse_key_values(body: &str) -> HashMap<&str, &str> {
+	let mut parsed = HashMap::new();
+	for line in body.lines() {
+		let mut key_value = line.split("=");
+		parsed.insert(key_value.next().unwrap(), key_value.next().unwrap());
+	}
+	parsed
 }
 
 
