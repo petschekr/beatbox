@@ -7,8 +7,10 @@ extern crate openssl;
 extern crate base64;
 
 use std::collections::HashMap;
+use std::fmt::Write;
 use reqwest::header;
 use ring::digest;
+use ring::rand::SecureRandom;
 use openssl::rsa::Rsa;
 use openssl::bn::BigNum;
 
@@ -29,24 +31,48 @@ pub struct Instance {
 }
 
 pub struct LoginDetails<'a> {
-	email: Option<&'a str>,
-	password: Option<&'a str>,
-	master_token: Option<&'a str>
+	email: &'a str,
+	password: &'a str,
+}
+
+pub struct TokenDetails {
+	android_id: String,
+	token: String,
 }
 
 impl Instance {
-	pub fn new() -> Instance {
+	fn new() -> Instance {
 		Instance {
 			client: reqwest::Client::new(),
 			token: None,
 			device_id: None,
 		}
 	}
-	
-	pub fn init(&mut self, details: LoginDetails) -> Result<(), reqwest::Error> {
-		let password;
-		let mut body = HashMap::new();
 
+	pub fn from_login(details: LoginDetails) -> Result<Instance, reqwest::Error> {
+		let mut instance = Instance::new();
+		
+		let password = encrypt_login(details.email, details.password);
+		let mut body: HashMap<&str, &str> = HashMap::new();
+		body.insert("EncryptedPasswd", &password);
+		body.insert("Email", &details.email);
+
+		instance.init(&mut body)?;
+		Ok(instance)
+	}
+
+	pub fn from_token(details: TokenDetails) -> Result<Instance, reqwest::Error> {
+		let mut instance = Instance::new();
+
+		let mut body: HashMap<&str, &str> = HashMap::new();
+		body.insert("Token", &details.token);
+
+		instance.init(&mut body)?;
+		instance.device_id = Some(details.android_id.to_string());
+		Ok(instance)
+	}
+	
+	fn init(&mut self, body: &mut HashMap<&str, &str>) -> Result<(), reqwest::Error> {
 		body.insert("accountType", "HOSTED_OR_GOOGLE");
 		body.insert("has_permission", "1");
 		body.insert("service", "sj");
@@ -58,19 +84,6 @@ impl Instance {
 		// headers.insert("client_sig", "61ed377e85d386a8dfee6b864bd85b0bfaa5af81");
 		body.insert("lang", "en");
 		body.insert("sdk_version", "17");
-
-		match details.master_token {
-			Some(token) => {
-				body.insert("Token", token);
-			},
-			None => {
-				let email = details.email.expect("Email required if no master token");
-				let raw_password = details.password.expect("Password required if no master token");
-				password = encrypt_login(email, raw_password);
-				body.insert("EncryptedPasswd", &password);
-				body.insert("Email", email);
-			}
-		};
 
 		let response = self.client.post(AUTH_URL).form(&body).send()?.text()?;
 		let parsed = parse_key_values(&response);
@@ -92,6 +105,46 @@ impl Instance {
 		}
 
 		Ok(())
+	}
+
+	pub fn generate_token<T: Into<String>>(details: LoginDetails, android_id: Option<T>) -> Result<TokenDetails, reqwest::Error> {
+		let password = encrypt_login(details.email, details.password);
+		let android_id: String = match android_id {
+			Some(id) => id.into(),
+			None => {
+				let generator = ring::rand::SystemRandom::new();
+				let mut id: [u8; 8] = [0; 8];
+				generator.fill(&mut id).unwrap();
+				let mut hex_id = String::new();
+				for byte in id.iter() {
+					write!(&mut hex_id, "{:x}", byte).expect("Unable to write");
+				}
+				hex_id
+			}
+		};
+
+		let token: String;
+		{
+			let mut body = HashMap::new();
+			body.insert("accountType", "HOSTED_OR_GOOGLE");
+			body.insert("has_permission", "1");
+			body.insert("add_account", "1");
+			body.insert("service", "ac2dm");
+			body.insert("source", "android");
+			body.insert("device_country", "us");
+			body.insert("operatorCountry", "us");
+			body.insert("lang", "en");
+			body.insert("sdk_version", "17");
+			body.insert("Email", details.email);
+			body.insert("EncryptedPasswd", &password);
+			body.insert("androidId", &android_id);
+
+			let client = reqwest::Client::new();
+			let response = client.post(AUTH_URL).form(&body).send()?.text()?;
+			let parsed = parse_key_values(&response);
+			token = parsed.get("Token").unwrap().to_string();
+		}
+		Ok(TokenDetails { token, android_id })
 	}
 
 	fn get_auth_header(&self) -> reqwest::header::Authorization<std::string::String> {
@@ -164,27 +217,19 @@ fn parse_key_values(body: &str) -> HashMap<&str, &str> {
 
 #[cfg(test)]
 mod tests {
-	#[test]
-    fn create_instance() {
-        super::Instance::new();
-    }
-	#[test]
-	#[should_panic]
-	fn empty_init() {
-		super::Instance::new().init(super::LoginDetails {
-			email: None,
-			password: None,
-			master_token: None
-		});
+	fn get_login_details<'a>() -> super::LoginDetails<'a> {
+		super::LoginDetails {
+			email: "petschekr@gmail.com",
+			password:include_str!("password.txt"),
+		}
 	}
 	#[test]
 	fn init() {
-		let mut instance = super::Instance::new();
-		instance.init(super::LoginDetails {
-			email: Some("petschekr@gmail.com"),
-			password: Some(include_str!("password.txt")),
-			master_token: None
-		});
-		instance.get_settings();
+		let instance = super::Instance::from_login(get_login_details()).unwrap();
+	}
+	#[test]
+	fn generate_token() {
+		let token_details = super::Instance::generate_token(get_login_details(), None).unwrap();
+		println!("Got random ID {} and token {}", token_details.android_id, token_details.token);
 	}
 }
