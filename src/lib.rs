@@ -1,25 +1,31 @@
+#[macro_use]
+extern crate serde_derive;
+
 extern crate reqwest;
 extern crate ring;
 extern crate openssl;
 extern crate base64;
 
 use std::collections::HashMap;
-
+use reqwest::header;
 use ring::digest;
 use openssl::rsa::Rsa;
 use openssl::bn::BigNum;
 
+mod json;
+
 const SIGNING_KEY: &'static str = "AAAAgMom/1a/v0lblO2Ubrt60J2gcuXSljGFQXgcyZWveWLEwo6prwgi3iJIZdodyhKZQrNWp5nKJ3srRXcUW+F1BD3baEVGcmEgqaLZUNBjm057pKRI16kB0YppeGx5qIQ5QjKzsR8ETQbKLNWgRY0QRNVz34kMJR3P/LgHax/6rmf5AAAAAwEAAQ==";
 
-const BASE_URL: &'static str = "https://www.googleapis.com/sj/v1.11/";
-const WEB_URL: &'static str = "https://play.google.com/music/";
-const MOBILE_URL: &'static str = "https://android.clients.google.com/music/";
-const ACCOUNT_URL: &'static str = "https://www.google.com/accounts/";
+const BASE_URL: &'static str = "https://www.googleapis.com/sj/v1.11";
+const WEB_URL: &'static str = "https://play.google.com/music";
+const MOBILE_URL: &'static str = "https://android.clients.google.com/music";
+const ACCOUNT_URL: &'static str = "https://www.google.com/accounts";
 const AUTH_URL: &'static str = "https://android.clients.google.com/auth";
 
 pub struct Instance {
 	client: reqwest::Client,
 	token: Option<String>,
+	device_id: Option<String>,
 }
 
 pub struct LoginDetails<'a> {
@@ -32,7 +38,8 @@ impl Instance {
 	pub fn new() -> Instance {
 		Instance {
 			client: reqwest::Client::new(),
-			token: None
+			token: None,
+			device_id: None,
 		}
 	}
 	
@@ -66,12 +73,44 @@ impl Instance {
 		};
 
 		let response = self.client.post(AUTH_URL).form(&body).send()?.text()?;
-		println!("{}", response);
 		let parsed = parse_key_values(&response);
 
 		self.token = Some(parsed.get("Auth").unwrap().to_string());
-		
+
+		let settings = self.get_settings()?;
+		self.device_id = None;
+		for device in settings.uploadDevice.iter() {
+			let id: &str = match device.deviceType {
+				// Strip the "0x" from the device ID
+				2 => &device.id[2..],
+				3 => &device.id,
+				_ => continue
+			};
+			println!("Using device ID: {}", id);
+			self.device_id = Some(id.to_string());
+			break;
+		}
+
 		Ok(())
+	}
+
+	fn get_auth_header(&self) -> reqwest::header::Authorization<std::string::String> {
+		let token = self.token.as_ref().expect("You must call init() before accessing the API");
+		header::Authorization(format!("GoogleLogin auth={}", token))
+	}
+
+	pub fn get_settings(&mut self) -> Result<json::Settings, reqwest::Error> {
+		let mut body = HashMap::new();
+		body.insert("sessionId", "");
+
+		let url = format!("{}/services/fetchsettings?u=0", WEB_URL);
+		let response: json::SettingsResponse = self.client
+			.post(&url)
+			.header(self.get_auth_header())
+			.json(&body)
+			.send()?
+			.json()?;
+		Ok(response.settings)
 	}
 }
 
@@ -140,10 +179,12 @@ mod tests {
 	}
 	#[test]
 	fn init() {
-		super::Instance::new().init(super::LoginDetails {
+		let mut instance = super::Instance::new();
+		instance.init(super::LoginDetails {
 			email: Some("petschekr@gmail.com"),
 			password: Some(include_str!("password.txt")),
 			master_token: None
 		});
+		instance.get_settings();
 	}
 }
