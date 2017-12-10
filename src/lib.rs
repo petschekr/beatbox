@@ -1,6 +1,5 @@
 #[macro_use]
 extern crate serde_derive;
-#[macro_use]
 extern crate hyper;
 
 extern crate reqwest;
@@ -9,6 +8,7 @@ extern crate openssl;
 extern crate base64;
 
 use std::collections::HashMap;
+use std::fmt;
 use reqwest::{header, StatusCode};
 use ring::digest;
 use ring::rand::SecureRandom;
@@ -66,7 +66,35 @@ impl From<&'static str> for Error {
 	}
 }
 
-header! { (XDeviceID, "X-Device-ID") => [String] }
+#[derive(Clone, Debug, PartialEq)]
+struct XDeviceID(String);
+impl ::std::ops::Deref for XDeviceID {
+	type Target = String;
+	fn deref(&self) -> &String {
+		&self.0
+	}
+}
+impl ::std::ops::DerefMut for XDeviceID {
+	fn deref_mut(&mut self) -> &mut String {
+		&mut self.0
+	}
+}
+impl fmt::Display for XDeviceID {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		fmt::Display::fmt(&self.0, f)
+	}
+}
+impl hyper::header::Header for XDeviceID {
+	fn header_name() -> &'static str {
+		"X-Device-ID"
+	}
+	fn parse_header(raw: &hyper::header::Raw) -> hyper::Result<Self> {
+		hyper::header::parsing::from_one_raw_str(raw).map(XDeviceID)
+	}
+	fn fmt_header(&self, f: &mut hyper::header::Formatter) -> fmt::Result {
+		f.fmt_line(self)
+	}
+}
 
 impl Instance {
 	fn new() -> Instance {
