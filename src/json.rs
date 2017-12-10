@@ -64,11 +64,11 @@ pub mod library {
 		Ok(serde_json::from_value(items).unwrap())
 	}
 	impl Response {
-		pub fn next_request(&self, tracks: &Vec<Track>) -> Option<Request> {
+		pub fn next_page_request(&self) -> Option<Request> {
 			match self.next_page_token {
 				None => None,
 				Some(ref token) => Some(Request {
-					limit: tracks.len() as u32,
+					limit: self.tracks.len() as u32,
 					next_page_token: token.clone(),
 				})
 			}

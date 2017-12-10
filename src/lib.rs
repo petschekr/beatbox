@@ -15,7 +15,7 @@ use ring::rand::SecureRandom;
 use openssl::rsa::Rsa;
 use openssl::bn::BigNum;
 
-mod json;
+pub mod json;
 use json::{settings, library};
 
 const LOGIN_SIGNING_KEY: &'static str = "AAAAgMom/1a/v0lblO2Ubrt60J2gcuXSljGFQXgcyZWveWLEwo6prwgi3iJIZdodyhKZQrNWp5nKJ3srRXcUW+F1BD3baEVGcmEgqaLZUNBjm057pKRI16kB0YppeGx5qIQ5QjKzsR8ETQbKLNWgRY0QRNVz34kMJR3P/LgHax/6rmf5AAAAAwEAAQ==";
@@ -34,22 +34,16 @@ pub struct Instance {
 }
 
 pub struct LoginDetails<'a> {
-	email: &'a str,
-	password: &'a str,
+	pub email: &'a str,
+	pub password: &'a str,
 }
 
 pub struct TokenDetails {
-	android_id: String,
-	token: String,
+	pub android_id: String,
+	pub token: String,
 }
 
-pub enum LibraryOptions {
-	Default,
-	Limit(u32),
-	NextPageToken(String),
-	LimitAndNextPageToken(u32, String)
-}
-
+/// Encapulates reqwest network errors and user errors into a single error type
 #[derive(Debug)]
 pub enum Error {
 	Network(reqwest::Error),
@@ -68,17 +62,6 @@ impl From<&'static str> for Error {
 
 #[derive(Clone, Debug, PartialEq)]
 struct XDeviceID(String);
-impl ::std::ops::Deref for XDeviceID {
-	type Target = String;
-	fn deref(&self) -> &String {
-		&self.0
-	}
-}
-impl ::std::ops::DerefMut for XDeviceID {
-	fn deref_mut(&mut self) -> &mut String {
-		&mut self.0
-	}
-}
 impl fmt::Display for XDeviceID {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		fmt::Display::fmt(&self.0, f)
@@ -109,7 +92,7 @@ impl Instance {
 	}
 
 	/// Creates a new instance using a username and password
-	pub fn from_login(details: LoginDetails) -> Result<Instance, reqwest::Error> {
+	pub fn from_login(details: LoginDetails) -> Result<Instance, Error> {
 		let mut instance = Instance::new();
 		
 		let password = encrypt_login(details.email, details.password);
@@ -122,7 +105,7 @@ impl Instance {
 	}
 
 	/// Creates a new instance using a master token
-	pub fn from_token(details: TokenDetails) -> Result<Instance, reqwest::Error> {
+	pub fn from_token(details: TokenDetails) -> Result<Instance, Error> {
 		let mut instance = Instance::new();
 
 		let mut body: HashMap<&str, &str> = HashMap::new();
@@ -133,7 +116,7 @@ impl Instance {
 		Ok(instance)
 	}
 	
-	fn init(&mut self, body: &mut HashMap<&str, &str>) -> Result<(), reqwest::Error> {
+	fn init(&mut self, body: &mut HashMap<&str, &str>) -> Result<(), Error> {
 		body.insert("accountType", "HOSTED_OR_GOOGLE");
 		body.insert("has_permission", "1");
 		body.insert("service", "sj");
@@ -168,7 +151,7 @@ impl Instance {
 	}
 
 	/// Generates a token from a username and password that can be used later to initialize a new instance
-	pub fn generate_token(details: LoginDetails, android_id: Option<&str>) -> Result<TokenDetails, reqwest::Error> {
+	pub fn generate_token(details: LoginDetails, android_id: Option<&str>) -> Result<TokenDetails, Error> {
 		let password = encrypt_login(details.email, details.password);
 		let android_id: String = match android_id {
 			Some(id) => id.to_string(),
@@ -210,7 +193,7 @@ impl Instance {
 	}
 
 	/// Returns settings and device ids authorized for account
-	pub fn get_settings(&mut self) -> Result<settings::Settings, reqwest::Error> {
+	pub fn get_settings(&mut self) -> Result<settings::Settings, Error> {
 		let mut body = HashMap::new();
 		body.insert("sessionId", "");
 
@@ -225,22 +208,11 @@ impl Instance {
 	}
 
 	/// Returns a list of all tracks in the user's library
-	/// 
-	/// Defaults to a limit of 1000 tracks
-	pub fn get_library(&self, options: LibraryOptions) -> Result<library::Response, Error> {
-		let mut request = library::Request {
-			limit: 1000,
-			next_page_token: String::new(),
+	pub fn get_library(&self, limit: u32, next_page_token: Option<&str>) -> Result<library::Response, Error> {
+		let request = library::Request {
+			limit,
+			next_page_token: next_page_token.unwrap_or_default().into(),
 		};
-		match options {
-			LibraryOptions::Default => {},
-			LibraryOptions::Limit(limit) => request.limit = limit,
-			LibraryOptions::NextPageToken(token) => request.next_page_token = token,
-			LibraryOptions::LimitAndNextPageToken(limit, token) => {
-				request.limit = limit;
-				request.next_page_token = token;
-			}
-		}
 
 		let url = format!("{}/trackfeed", BASE_URL);
 		let response: library::Response = self.client
@@ -258,6 +230,8 @@ impl Instance {
 		if self.device_id.is_none() {
 			Err("Unable to find a usable device on your account, access from a mobile device and try again")?;
 		}
+		let track_id = &track.id;
+
 		let key = base64::decode(STREAM_SIGNING_KEY).unwrap();
 		let key = ring::hmac::SigningKey::new(&digest::SHA1, &key);
 
@@ -265,7 +239,7 @@ impl Instance {
 		self.rng.fill(&mut salt).unwrap();
 		let salt: String = salt.to_hex();
 
-		let message = track.id.clone() + &salt;
+		let message = track_id.clone() + &salt;
 		let signature = base64::encode_config(
 			ring::hmac::sign(&key, message.as_bytes()).as_ref(),
 			base64::URL_SAFE_NO_PAD
@@ -278,11 +252,11 @@ impl Instance {
 		query.insert("targetkbps", "8310");
 		query.insert("slt", &salt);
 		query.insert("sig", &signature);
-		if track.id.chars().next().unwrap() == 'T' {
-			query.insert("mjck", &track.id);
+		if track_id.chars().next().unwrap() == 'T' {
+			query.insert("mjck", track_id);
 		}
 		else {
-			query.insert("songid", &track.id);
+			query.insert("songid", track_id);
 		}
 
 		let url = reqwest::Url::parse_with_params(&format!("{}/mplay", MOBILE_URL), query).unwrap().into_string();
@@ -294,16 +268,14 @@ impl Instance {
 
 		match response.status() {
 			StatusCode::Found => {
-				let url = response.headers().get::<header::Location>().unwrap();
+				let url: &header::Location = response.headers().get().unwrap();
 				Ok(url.to_string())
 			},
 			_ => {
 				if let Err(err) = response.error_for_status() {
 					Err(err)?
 				}
-				else {
-					Err("Couldn't get stream URL")?
-				}
+				Err("Couldn't get stream URL")?
 			}
 		}
 	}
@@ -385,7 +357,7 @@ mod tests {
 	#[test]
 	fn init() {
 		let instance = super::Instance::from_login(get_login_details()).unwrap();
-		let tracks = instance.get_library(super::LibraryOptions::Default).unwrap().tracks;
+		let tracks = instance.get_library(10, None).unwrap().tracks;
 		let url = instance.get_stream_url(&tracks[0]).unwrap();
 		println!("Got stream URL for {} by {}: {}", tracks[0].title, tracks[0].artist, url);
 	}
