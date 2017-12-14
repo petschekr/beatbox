@@ -38,6 +38,7 @@ pub mod settings {
 	}
 }
 pub mod library {
+	use std::convert::From;
 	use super::serde::{Deserialize, Deserializer};
 	use super::serde_json::{self, Value, Map};
 
@@ -75,6 +76,29 @@ pub mod library {
 		}
 	}
 	
+	pub enum TrackID<'a> {
+		Library(&'a str),
+		Store(&'a str),
+	}
+	impl<'a> TrackID<'a> {
+		pub fn get_id(&self) -> &'a str {
+			match *self {
+				TrackID::Library(id) => id,
+				TrackID::Store(id) => id,
+			}
+		}
+	}
+	impl<'a> From<&'a str> for TrackID<'a> {
+		fn from(id: &'a str) -> Self {
+			if id.chars().next().unwrap() == 'T' {
+				TrackID::Store(id)
+			}
+			else {
+				TrackID::Library(id)
+			}
+		}
+	}
+
 	#[derive(Deserialize, Debug)]
 	#[serde(rename_all = "camelCase")]
 	pub struct Track {

@@ -17,6 +17,7 @@ use openssl::bn::BigNum;
 
 pub mod json;
 use json::{settings, library};
+use library::TrackID;
 
 const LOGIN_SIGNING_KEY: &'static str = "AAAAgMom/1a/v0lblO2Ubrt60J2gcuXSljGFQXgcyZWveWLEwo6prwgi3iJIZdodyhKZQrNWp5nKJ3srRXcUW+F1BD3baEVGcmEgqaLZUNBjm057pKRI16kB0YppeGx5qIQ5QjKzsR8ETQbKLNWgRY0QRNVz34kMJR3P/LgHax/6rmf5AAAAAwEAAQ==";
 const STREAM_SIGNING_KEY: &'static str = "MzRlZTc5ODMtNWVlNi00MTQ3LWFhODYtNDQzZWEwNjJhYmY3NzQ0OTNkNmEtMmExNS00M2ZlLWFhY2UtZTc4NTY2OTI3NTg1Cg==";
@@ -29,13 +30,8 @@ const AUTH_URL: &'static str = "https://android.clients.google.com/auth";
 pub struct Instance {
 	client: reqwest::Client,
 	rng: ring::rand::SystemRandom,
-	token: Option<String>,
+	auth_token: Option<String>,
 	device_id: Option<String>,
-}
-
-pub struct LoginDetails<'a> {
-	pub email: &'a str,
-	pub password: &'a str,
 }
 
 pub struct TokenDetails {
@@ -86,19 +82,19 @@ impl Instance {
 				.redirect(reqwest::RedirectPolicy::none())
 				.build().unwrap(),
 			rng: ring::rand::SystemRandom::new(),
-			token: None,
+			auth_token: None,
 			device_id: None,
 		}
 	}
 
 	/// Creates a new instance using a username and password
-	pub fn from_login(details: LoginDetails) -> Result<Instance, Error> {
+	pub fn from_login(email: &str, password: &str) -> Result<Instance, Error> {
 		let mut instance = Instance::new();
 		
-		let password = encrypt_login(details.email, details.password);
+		let password = encrypt_login(email, password);
 		let mut body: HashMap<&str, &str> = HashMap::new();
 		body.insert("EncryptedPasswd", &password);
-		body.insert("Email", &details.email);
+		body.insert("Email", email);
 
 		instance.init(&mut body)?;
 		Ok(instance)
@@ -132,7 +128,7 @@ impl Instance {
 		let response = self.client.post(AUTH_URL).form(&body).send()?.text()?;
 		let parsed = parse_key_values(&response);
 
-		self.token = Some(parsed.get("Auth").unwrap().to_string());
+		self.auth_token = Some(parsed.get("Auth").unwrap().to_string());
 
 		let settings = self.get_settings()?;
 		self.device_id = None;
@@ -151,8 +147,8 @@ impl Instance {
 	}
 
 	/// Generates a token from a username and password that can be used later to initialize a new instance
-	pub fn generate_token(details: LoginDetails, android_id: Option<&str>) -> Result<TokenDetails, Error> {
-		let password = encrypt_login(details.email, details.password);
+	pub fn generate_token(email: &str, password: &str, android_id: Option<&str>) -> Result<TokenDetails, Error> {
+		let password = encrypt_login(email, password);
 		let android_id: String = match android_id {
 			Some(id) => id.to_string(),
 			None => {
@@ -175,7 +171,7 @@ impl Instance {
 			body.insert("operatorCountry", "us");
 			body.insert("lang", "en");
 			body.insert("sdk_version", "17");
-			body.insert("Email", details.email);
+			body.insert("Email", email);
 			body.insert("EncryptedPasswd", &password);
 			body.insert("androidId", &android_id);
 
@@ -188,7 +184,7 @@ impl Instance {
 	}
 
 	fn get_auth_header(&self) -> reqwest::header::Authorization<String> {
-		let token = self.token.as_ref().expect("You must call init() before accessing the API");
+		let token = self.auth_token.as_ref().expect("You must call init() before accessing the API");
 		header::Authorization(format!("GoogleLogin auth={}", token))
 	}
 
@@ -226,11 +222,10 @@ impl Instance {
 	}
 
 	/// Returns a track's stream URL
-	pub fn get_stream_url(&self, track: &library::Track) -> Result<String, Error> {
+	pub fn get_stream_url(&self, track_id: &TrackID) -> Result<String, Error> {
 		if self.device_id.is_none() {
 			Err("Unable to find a usable device on your account, access from a mobile device and try again")?;
 		}
-		let track_id = &track.id;
 
 		let key = base64::decode(STREAM_SIGNING_KEY).unwrap();
 		let key = ring::hmac::SigningKey::new(&digest::SHA1, &key);
@@ -239,7 +234,7 @@ impl Instance {
 		self.rng.fill(&mut salt).unwrap();
 		let salt: String = salt.to_hex();
 
-		let message = track_id.clone() + &salt;
+		let message = track_id.get_id().to_string() + &salt;
 		let signature = base64::encode_config(
 			ring::hmac::sign(&key, message.as_bytes()).as_ref(),
 			base64::URL_SAFE_NO_PAD
@@ -252,11 +247,9 @@ impl Instance {
 		query.insert("targetkbps", "8310");
 		query.insert("slt", &salt);
 		query.insert("sig", &signature);
-		if track_id.chars().next().unwrap() == 'T' {
-			query.insert("mjck", track_id);
-		}
-		else {
-			query.insert("songid", track_id);
+		match *track_id {
+			TrackID::Store(id) => { query.insert("mjck", id); }
+			TrackID::Library(id) => { query.insert("songid", id); }
 		}
 
 		let url = reqwest::Url::parse_with_params(&format!("{}/mplay", MOBILE_URL), query).unwrap().into_string();
@@ -348,22 +341,18 @@ impl ToHex for [u8] {
 
 #[cfg(test)]
 mod tests {
-	fn get_login_details<'a>() -> super::LoginDetails<'a> {
-		super::LoginDetails {
-			email: "petschekr@gmail.com",
-			password: include_str!("password.txt"),
-		}
-	}
+	use json::library;
 	#[test]
 	fn init() {
-		let instance = super::Instance::from_login(get_login_details()).unwrap();
+		let instance = super::Instance::from_login("petschekr@gmail.com", include_str!("password.txt")).unwrap();
 		let tracks = instance.get_library(10, None).unwrap().tracks;
-		let url = instance.get_stream_url(&tracks[0]).unwrap();
+		let id: library::TrackID = tracks[0].id.as_str().into();
+		let url = instance.get_stream_url(&id).unwrap();
 		println!("Got stream URL for {} by {}: {}", tracks[0].title, tracks[0].artist, url);
 	}
 	#[test]
 	fn generate_token() {
-		let token_details = super::Instance::generate_token(get_login_details(), None).unwrap();
+		let token_details = super::Instance::generate_token("petschekr@gmail.com", include_str!("password.txt"), None).unwrap();
 		println!("Got random ID {} and token {}", token_details.android_id, token_details.token);
 	}
 }
