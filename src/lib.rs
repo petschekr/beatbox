@@ -218,6 +218,9 @@ impl Instance {
 			.send()?
 			.json().unwrap();
 
+		let response2 = self.client.post(&url).header(self.get_auth_header()).json(&request).send()?.text()?;
+		println!("library: {}", response2);
+
 		Ok(response)
 	}
 
@@ -271,6 +274,26 @@ impl Instance {
 				Err("Couldn't get stream URL")?
 			}
 		}
+	}
+
+	/// Searches for All Access tracks
+	pub fn search(&self, text: &str, limit: u32) -> Result<(), Error> {
+		let url = format!("{}/query", BASE_URL);
+		let query = [
+			("q", text),
+			("ct", "1,2,3,4,5,6,7,8,9"),
+			("max-results", &limit.to_string())
+		];
+
+		let response = self.client
+			.get(&url)
+			.header(self.get_auth_header())
+			.query(&query)
+			.send()?.text()?;
+		println!("Search output: {}", response);
+			//.json().unwrap();
+
+		Ok(())
 	}
 }
 
@@ -354,5 +377,10 @@ mod tests {
 	fn generate_token() {
 		let token_details = super::Instance::generate_token("petschekr@gmail.com", include_str!("password.txt"), None).unwrap();
 		println!("Got random ID {} and token {}", token_details.android_id, token_details.token);
+	}
+	#[test]
+	fn search() {
+		let instance = super::Instance::from_login("petschekr@gmail.com", include_str!("password.txt")).unwrap();
+		let tracks = instance.search("Stadium Arcadium", 10).unwrap();
 	}
 }

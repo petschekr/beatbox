@@ -151,4 +151,43 @@ pub mod library {
 		let url = n[0]["url"].clone();
 		Ok(serde_json::from_value(url).unwrap())
 	}
+
+	#[derive(Deserialize, Debug)]
+	#[serde(rename_all = "camelCase")]
+	pub struct Album {
+		pub kind: String,
+		pub name: String,
+
+		pub album_id: String,
+		pub album_artist: String,
+		pub artist: String,
+		pub artist_id: Vec<String>,
+		pub year: Option<u16>,
+		#[serde(default)]
+		#[serde(rename = "artistArtRef")]
+		#[serde(deserialize_with = "extract_art")]
+		pub album_art_url: Option<String>,
+	}
+}/*
+pub mod search {
+	use super::serde::{Deserialize, Deserializer};
+	use super::serde_json::{self, Value, Map};
+	use library::*;
+
+	#[derive(Deserialize, Debug)]
+	pub struct Response {
+		pub kind: String,
+		#[serde(rename = "entries")]
+		#[serde(deserialize_with = "extract_albums")]
+		pub albums: Vec<Album>,
+		#[serde(rename = "entries")]
+		#[serde(deserialize_with = "extract_data")]
+		pub tracks: Vec<Track>,
+	}
+	fn extract_albums<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Album>, D::Error> {
+		let n: Map<String, Value> = Deserialize::deserialize(d)?;
+		let items = n.get("items").unwrap().clone();
+		Ok(serde_json::from_value(items).unwrap())
+	}
 }
+*/
